@@ -157,6 +157,12 @@ include_directories(${PROJECT_SOURCE_DIR}/src/query/compile)
 include_directories(${PROJECT_SOURCE_DIR}/src/tx)
 include_directories(${PROJECT_SOURCE_DIR}/src/dict)
 include_directories(${PROJECT_SOURCE_DIR}/src/btree)
+include_directories(/home/proteeti/DualIndex/indexes)
+# has router.hpp, base_index.hpp and learned/ subfolder (zmindex.hpp is inside learned/)
+include_directories(/home/proteeti/DualIndex/indexes/pgm)
+#has pgm math library pgm_index.hpp, morton_nd.hpp. zmindex and flood internally includes pgm.
+include_directories(/home/proteeti/DualIndex/utils)
+#includes the basic data types like type.hpp, common.hpp -> point_t, box_t (both zmindex and flood uses this)
 include_directories(${PROJECT_SOURCE_DIR}/src/pool)
 include_directories(${PROJECT_SOURCE_DIR}/src/log)
 include_directories(${PROJECT_SOURCE_DIR}/src/analytics)
@@ -286,6 +292,10 @@ endif()
 
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mbmi2")
+  #this is for zminex, as it uses a special CPU instruction (bmi2) for fast member encoding (the morton / z-order curve)
+  #without this zmindex does not compile 
+  #CMAKE_CXX_FLAGS holds compiler flags
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
   set(DYLIB_LIBRARY "-ldl")
 else()
@@ -403,12 +413,14 @@ set(src_files
   src/storage/graph_db.cpp
   src/storage/graph_db_import.cpp
   src/storage/graph_db_index.cpp
+  src/storage/graph_db_learned_index.cpp
   src/storage/graph_db_gc.cpp
   src/storage/graph_db_recovery.cpp
   src/bp_file/paged_file.cpp
   src/bp_file/bufferpool.cpp
   src/bp_file/lru_list.cpp
   src/btree/index_map.cpp
+  src/btree/dual_index.cpp
   src/query/plan_op/qop.cpp
   src/query/plan_op/qop_projection.cpp
   src/query/plan_op/qop_builtins.cpp
@@ -605,3 +617,8 @@ add_subdirectory(test)
 
 # Create logs directory
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/logs")
+
+
+add_executable(test_dualindex test/dual_index_test.cpp)
+target_link_libraries(test_dualindex poseidon_core)
+target_compile_options(test_dualindex PRIVATE -mbmi2)

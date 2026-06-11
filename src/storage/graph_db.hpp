@@ -34,6 +34,7 @@
 #include "transaction.hpp"
 #include "btree.hpp"
 #include "index_map.hpp"
+#include "dual_index.hpp"
 #ifdef USE_PMDK
 #include "pm_ulog.hpp"
 #elif defined(USE_PFILES)
@@ -380,6 +381,37 @@ public:
    */
   node::id_t node_id_from_index(index_id idx_ptr, uint64_t key);
 
+
+  /* ---------------- learned index (DualIndex) ---------------- */
+  /*Declares the 3 new graph_db methods + a dual_index_ member; includes dual_index.hpp.*/
+
+  /**
+   * Build the learned index from the current relationship data.
+   */
+  void build_learned_index();
+
+  /**
+   * Point query: does the 2-hop path (src -> hop1 -> hop2) exist?
+   */
+  offset_t learned_point_lookup(offset_t src, offset_t hop1, offset_t hop2);
+
+  /**
+   * Range query: find all 2-hop paths starting from src.
+   */
+  std::vector<offset_t> learned_range_query(offset_t src);
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ---------------- Analytics support ---------------- */
 
   /**
@@ -569,6 +601,7 @@ private:
   p_ptr<dict> dict_; // the dictionary used for string compression
 
   p_ptr<index_map> index_map_; // the list of all exisiting indexes
+  std::unique_ptr<DualIndex> dual_index_; // learned index for relationship path queries
 
 #if defined CSR_DELTA
   p_ptr<delta_store> delta_store_; // the CSR delta store
