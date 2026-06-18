@@ -57,3 +57,12 @@ std::vector<offset_t> graph_db::learned_range_query(offset_t src) {
     if (!dual_index_) return {};
     return dual_index_->range_query(src);
 }
+
+std::vector<offset_t> graph_db::learned_multi_hop_query(offset_t src, offset_t hop1) {
+    if (!dual_index_) return {};
+    return dual_index_->multi_hop_query(src, hop1);
+}
+
+size_t graph_db::learned_index_size() {
+    return dual_index_ ? dual_index_->index_size() : 0;
+}

@@ -30,7 +30,10 @@ public:
 
     /*range query return a list of offsets*/
     std::vector<offset_t> range_query(offset_t src) const;
-    
+
+    /*multi-hop range query: pin src AND hop1, return matching hop2 ids*/
+    std::vector<offset_t> multi_hop_query(offset_t src, offset_t hop1) const;
+
     size_t index_size() const; /* return the size of the index in bytes*/
 
 private:

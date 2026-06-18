@@ -622,3 +622,7 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/logs")
 add_executable(test_dualindex test/dual_index_test.cpp)
 target_link_libraries(test_dualindex poseidon_core)
 target_compile_options(test_dualindex PRIVATE -mbmi2)
+
+add_executable(bench_dualindex test/bench_dualindex_wiki.cpp)
+target_link_libraries(bench_dualindex poseidon_core)
+target_compile_options(bench_dualindex PRIVATE -mbmi2 -O3 -DNDEBUG)

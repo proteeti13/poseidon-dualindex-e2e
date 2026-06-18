@@ -61,9 +61,32 @@ std::vector<offset_t> DualIndex::range_query(offset_t src) const{
     for (const auto& triple : results) {
         offsets.push_back(static_cast<offset_t>(triple[2]));
     }
-      
-    return offsets;  
 
+    return offsets;
+
+}
+
+std::vector<offset_t> DualIndex::multi_hop_query(offset_t src, offset_t hop1) const{
+    /* pin both SourceID (dim 0) and Hop1_ID (dim 1); leave Hop2_ID (dim 2) open.
+       FloodSourceSort applies an exact is_in_box filter, so only the precise
+       (src, hop1, *) rows survive. */
+    Triple min_corner = {static_cast<double>(src),
+                         static_cast<double>(hop1),
+                         0.0};
+    Triple max_corner = {static_cast<double>(src),
+                         static_cast<double>(hop1),
+                         std::numeric_limits<double>::max()};
+
+    box_t<3> box(min_corner, max_corner);
+
+    Points results = flood_index_->range_query(box);
+
+    std::vector<offset_t> offsets;
+    for (const auto& triple : results) {
+        offsets.push_back(static_cast<offset_t>(triple[2]));
+    }
+
+    return offsets;
 }
 
 

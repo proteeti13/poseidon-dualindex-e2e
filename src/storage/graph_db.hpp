@@ -400,6 +400,16 @@ public:
    */
   std::vector<offset_t> learned_range_query(offset_t src);
 
+  /**
+   * Multi-hop range query: find all hop2 endpoints of paths (src -> hop1 -> *).
+   */
+  std::vector<offset_t> learned_multi_hop_query(offset_t src, offset_t hop1);
+
+  /**
+   * Returns the in-memory size (bytes) of the learned index, or 0 if not built.
+   */
+  size_t learned_index_size();
+
 
 
 
