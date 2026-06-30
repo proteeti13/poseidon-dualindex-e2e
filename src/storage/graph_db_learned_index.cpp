@@ -63,6 +63,12 @@ std::vector<offset_t> graph_db::learned_multi_hop_query(offset_t src, offset_t h
     return dual_index_->multi_hop_query(src, hop1);
 }
 
+std::vector<offset_t> graph_db::learned_query(const std::array<offset_t, 3>& min_corner,
+                                              const std::array<offset_t, 3>& max_corner) {
+    if (!dual_index_) return {};
+    return dual_index_->query(min_corner, max_corner);
+}
+
 size_t graph_db::learned_index_size() {
     return dual_index_ ? dual_index_->index_size() : 0;
 }

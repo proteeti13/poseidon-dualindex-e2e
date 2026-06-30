@@ -531,3 +531,5 @@ $RECYCLE.BIN/
 # ignore everything in the generated documentation directory
 # (commented out because separate .gitignore inside that directory)
 # doc/generated/*
+results/thesis_tables.md
+results/section_3.5_redline.md

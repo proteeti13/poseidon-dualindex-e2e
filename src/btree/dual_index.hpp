@@ -34,6 +34,16 @@ public:
     /*multi-hop range query: pin src AND hop1, return matching hop2 ids*/
     std::vector<offset_t> multi_hop_query(offset_t src, offset_t hop1) const;
 
+    /* Router: take a bounding box (min/max corners as offset triples) and dispatch
+       to the right specialist method by counting pinned dimensions (min == max),
+       mirroring the is_point() logic in indexes/router.hpp:
+         - all 3 dims pinned        -> point_lookup()      (ZM-Index)
+         - src + hop1 pinned (2)     -> multi_hop_query()   (FloodSourceSort)
+         - src pinned only           -> range_query()       (FloodSourceSort)
+       Results are returned uniformly as a vector of offsets (empty if none/not found). */
+    std::vector<offset_t> query(const std::array<offset_t, 3>& min_corner,
+                                const std::array<offset_t, 3>& max_corner) const;
+
     size_t index_size() const; /* return the size of the index in bytes*/
 
 private:

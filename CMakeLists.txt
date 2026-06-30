@@ -626,3 +626,5 @@ target_compile_options(test_dualindex PRIVATE -mbmi2)
 add_executable(bench_dualindex test/bench_dualindex_wiki.cpp)
 target_link_libraries(bench_dualindex poseidon_core)
 target_compile_options(bench_dualindex PRIVATE -mbmi2 -O3 -DNDEBUG)
+# Note: test/router_e2e_test.cpp is auto-registered by test/CMakeLists.txt's
+# *_test.cpp glob (target: router_e2e_test); -mbmi2 is applied globally (line 295).

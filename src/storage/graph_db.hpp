@@ -406,6 +406,14 @@ public:
   std::vector<offset_t> learned_multi_hop_query(offset_t src, offset_t hop1);
 
   /**
+   * Router query: dispatch a bounding box (min/max corners as offset triples) to
+   * the appropriate learned access path (point / multi-hop / single-hop) based on
+   * how many dimensions are pinned. Returns offsets (empty if not built or no match).
+   */
+  std::vector<offset_t> learned_query(const std::array<offset_t, 3>& min_corner,
+                                      const std::array<offset_t, 3>& max_corner);
+
+  /**
    * Returns the in-memory size (bytes) of the learned index, or 0 if not built.
    */
   size_t learned_index_size();

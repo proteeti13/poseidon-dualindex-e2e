@@ -90,6 +90,34 @@ std::vector<offset_t> DualIndex::multi_hop_query(offset_t src, offset_t hop1) co
 }
 
 
+std::vector<offset_t> DualIndex::query(const std::array<offset_t, 3>& min_corner,
+                                       const std::array<offset_t, 3>& max_corner) const{
+    /* Count pinned dimensions (min == max), same is_point() logic as
+       indexes/router.hpp. The number of pinned dims selects the access path. */
+    size_t pinned = 0;
+    for (size_t d = 0; d < 3; ++d) {
+        if (min_corner[d] == max_corner[d]) ++pinned;
+    }
+
+    if (pinned == 3) {
+        /* all three dims pinned -> exact point lookup via ZM-Index.
+           point_lookup returns src when found, UNKNOWN otherwise; surface that
+           as a single-element vector (or empty) so the router has one return type. */
+        offset_t hit = point_lookup(min_corner[0], min_corner[1], min_corner[2]);
+        if (hit == UNKNOWN) return {};
+        return { hit };
+    }
+
+    if (pinned == 2) {
+        /* src + hop1 pinned, hop2 open -> multi-hop range via FloodSourceSort. */
+        return multi_hop_query(min_corner[0], min_corner[1]);
+    }
+
+    /* only src pinned (or fewer) -> single-hop range via FloodSourceSort. */
+    return range_query(min_corner[0]);
+}
+
+
 size_t DualIndex::index_size() const{
     size_t total = 0;
     if(zm_index_){
