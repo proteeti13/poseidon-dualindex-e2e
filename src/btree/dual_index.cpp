@@ -20,7 +20,7 @@ void DualIndex::build(const Points& triples){
     trains PGM line segments for the sorted morton codes, 
     stores these line segments as the learned model,
     example: zm_index_= [ trained ZM model with xyz number of line segments ] */
-    zm_index_ = std::make_unique<bench::index::ZMIndex<3,64>>(zm_data_);
+    zm_index_ = std::make_unique<bench::index::ZMIndex<3,64,false>>(zm_data_);
 
     /* created FloodSourceSort object, passes flood_data_ to constructor.
        FloodSourceSort sorts within each grid cell by SourceID (dim 0) — the

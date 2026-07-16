@@ -58,7 +58,7 @@ private:
     
     
     */
-    std::unique_ptr<bench::index::ZMIndex<3,64>> zm_index_;
+    std::unique_ptr<bench::index::ZMIndex<3,64,false>> zm_index_;
     /* FloodSourceSort: SourceID is the sort dimension, K=4 (optimal for this layout —
        small K wins because scans are exact; stock Flood used K=20). */
     std::unique_ptr<bench::index::FloodSourceSort<3,4,64>> flood_index_;
