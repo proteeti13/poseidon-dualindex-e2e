@@ -89,7 +89,7 @@ static double expected_triples(const std::string& name) {
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "usage: " << argv[0]
-                  << " <dataset_path> <dataset_name> [num_queries]" << std::endl;
+                  << " <dataset_path> <dataset_name> [num_queries] [num_range_queries]" << std::endl;
         return 2;
     }
     const std::string dataset_path = argv[1];
@@ -97,7 +97,8 @@ int main(int argc, char** argv) {
     const size_t NQ = (argc >= 4) ? (size_t)std::stoull(argv[3]) : 100000;
     const size_t N_POINT_POS = NQ;
     const size_t N_POINT_NEG = std::max<size_t>(1, NQ / 10);
-    const size_t N_RANGE = NQ;
+    // optional 5th arg: separate count for the range query types (default: NQ)
+    const size_t N_RANGE = (argc >= 5) ? (size_t)std::stoull(argv[4]) : NQ;
 
     const std::string csv_path = "results/poseidon_e2e_" + dataset_name + ".csv";
     const std::string test_path = PMDK_PATH(std::string("dualindex_") + dataset_name);

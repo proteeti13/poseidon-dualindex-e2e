@@ -533,3 +533,10 @@ $RECYCLE.BIN/
 # doc/generated/*
 results/thesis_tables.md
 results/section_3.5_redline.md
+results/art_baseline_diagram.txt
+results/dualindex_pipeline_diagram.txt
+results/flood_vs_sourcesort_diagram.txt
+results/thesis_eval_setup.md
+results/zmindex_pipeline_diagram.txt
+results/zmindex_v1_vs_v3_refinement.txt
+
