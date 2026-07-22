@@ -540,3 +540,14 @@ results/thesis_eval_setup.md
 results/zmindex_pipeline_diagram.txt
 results/zmindex_v1_vs_v3_refinement.txt
 
+# DualIndex end-to-end benchmark: generated artifacts (never committed; the
+# workloads are reproducible via run_all.sh --gen_queries).
+queries/*.bin
+queries/*_scan_overhead.txt
+results/
+logs/
+# per-dataset PMEM/storage dirs (dualindex_wiki_vote/, dualindex_web_google/, ...)
+/dualindex_*/
+# instrumented SCAN_DEBUG build tree (companion to /build/)
+/build_scan/
+

@@ -626,5 +626,17 @@ target_compile_options(test_dualindex PRIVATE -mbmi2)
 add_executable(bench_dualindex test/bench_dualindex_wiki.cpp)
 target_link_libraries(bench_dualindex poseidon_core)
 target_compile_options(bench_dualindex PRIVATE -mbmi2 -O3 -DNDEBUG)
+
+# SCAN_DEBUG: instrument FloodSourceSort's cell-scan loop with an entries-examined
+# counter so bench_dualindex can verify its analytic scan_overhead formula.
+# OFF by default -> normal build is unaffected. Scoped to just dual_index.cpp
+# (where FloodSourceSort<3,4,64> is instantiated) and the bench target, so
+# toggling it recompiles only those two TUs. Enable with: cmake -DSCAN_DEBUG=ON .
+option(SCAN_DEBUG "Instrument FloodSourceSort scan counter for scan_overhead verification" OFF)
+if(SCAN_DEBUG)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/btree/dual_index.cpp
+                              PROPERTIES COMPILE_DEFINITIONS SCAN_DEBUG)
+  target_compile_definitions(bench_dualindex PRIVATE SCAN_DEBUG)
+endif()
 # Note: test/router_e2e_test.cpp is auto-registered by test/CMakeLists.txt's
 # *_test.cpp glob (target: router_e2e_test); -mbmi2 is applied globally (line 295).
