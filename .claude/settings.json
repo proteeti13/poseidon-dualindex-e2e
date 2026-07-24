@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./run_all.sh roadnet_ca web_google)",
+      "Bash(echo \"RUNALL_EXIT=$?\")",
+      "Bash(python3 scripts/oracle_verify.py --edges /home/proteeti/RSMI/datasets/wiki-Vote.txt --queries_dir queries --dataset wiki_vote)",
+      "Bash(git checkout *)",
+      "Bash(./build/bench_dualindex --help)"
+    ]
+  }
+}

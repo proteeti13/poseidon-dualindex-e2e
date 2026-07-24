@@ -63,14 +63,47 @@
 #include <cerrno>
 #endif
 
+#include <sys/resource.h>
+
 #include "graph_db.hpp"
 #include "graph_pool.hpp"
 #include "defs.hpp"
 
+// ART (Adaptive Radix Tree) baseline — the SAME libart used by the standalone
+// DualIndex benchmarks. Additive baseline only; no DualIndex/Flood/ZM/native
+// code is touched. Keys are the same 12-byte big-endian triple encoding.
+extern "C" {
+#include "art.h"
+}
+
 using clk = std::chrono::high_resolution_clock;
 
+// ── ART key encoding (identical to bench_art_baseline.cpp): 3×4-byte big-endian
+// so lexicographic byte order == numeric order, making a 4-byte prefix == fix
+// SourceID and an 8-byte prefix == fix (SourceID,Hop1). ──────────────────────
+static inline void put_be32(uint32_t v, unsigned char* p) {
+    p[0] = (unsigned char)(v >> 24); p[1] = (unsigned char)(v >> 16);
+    p[2] = (unsigned char)(v >> 8);  p[3] = (unsigned char)(v);
+}
+static inline void encode_key12(const std::array<uint32_t, 3>& t, unsigned char* out) {
+    put_be32(t[0], out); put_be32(t[1], out + 4); put_be32(t[2], out + 8);
+}
+// ART range iteration callback: decode Hop2 (big-endian bytes 8..11) from each
+// visited leaf key and collect it, so results can be multiset-compared to the
+// ground truth exactly (same check the Flood/native range phases use).
+struct ArtHopCtx { std::vector<uint32_t>* out; };
+static int art_collect_hop2(void* data, const unsigned char* key, uint32_t, void*) {
+    uint32_t h2 = ((uint32_t)key[8] << 24) | ((uint32_t)key[9] << 16)
+                | ((uint32_t)key[10] << 8) | (uint32_t)key[11];
+    ((ArtHopCtx*)data)->out->push_back(h2);
+    return 0;
+}
+// peak-RSS proxy for ART index size (matches the standalone's index_rss_mb).
+static long long rss_kb() {
+    struct rusage ru; getrusage(RUSAGE_SELF, &ru); return (long long)ru.ru_maxrss;
+}
+
 static const std::string RESULTS_DIR = "results";
-static const std::string UNIFIED_CSV = "results/poseidon_e2e_all_snap.csv";
 static const unsigned SEED = 42;
 // WARM-UP POLICY: before timing a workload we run this many untimed warm-up
 // queries drawn from the head of the persisted file. They are NOT counted in
@@ -109,6 +142,8 @@ struct Config {
     bool print_batch_stats = false;
     bool perf = false;
     bool measure_scan_overhead = false;
+    bool with_art = false;
+    bool hub_weighted = false;
     std::string dualindex_repo = DEFAULT_DUALINDEX_REPO;
 };
 
@@ -119,7 +154,11 @@ static void usage(const char* argv0) {
         "         [--flood_k <n>=4] [--zm_epsilon <n>=64] [--batch_size <n>=10000]\n"
         "         [--print_batch_stats] [--perf] [--dualindex_repo <path>]\n"
         "         [--measure_scan_overhead]   (SCAN_DEBUG build only: untimed pass that\n"
-        "                                      writes queries/<name>_scan_overhead.txt)\n";
+        "                                      writes queries/<name>_scan_overhead.txt)\n"
+        "         [--with_art]   (additive ART baseline on the same triples/queries)\n"
+        "         [--hub_weighted]   (frequency-weighted single_hop/multi_hop sources;\n"
+        "                             reads/writes queries/<name>_<type>_hubweighted.bin and\n"
+        "                             results/..._hubweighted.csv, never the hub-neutral set)\n";
 }
 
 static bool parse_args(int argc, char** argv, Config& c) {
@@ -133,6 +172,8 @@ static bool parse_args(int argc, char** argv, Config& c) {
         else if (a == "--print_batch_stats") c.print_batch_stats = true;
         else if (a == "--perf") c.perf = true;
         else if (a == "--measure_scan_overhead") c.measure_scan_overhead = true;
+        else if (a == "--with_art") c.with_art = true;
+        else if (a == "--hub_weighted") c.hub_weighted = true;
         else if (a == "--dataset_file") { auto v = need(i); if (!v) return false; c.dataset_file = v; }
         else if (a == "--dataset_name") { auto v = need(i); if (!v) return false; c.dataset_name = v; }
         else if (a == "--queries_dir") { auto v = need(i); if (!v) return false; c.queries_dir = v; }
@@ -182,14 +223,18 @@ static const char* qtype_name(uint32_t t) {
         default:            return "unknown";
     }
 }
+// --hub_weighted routes every workload artifact (query files, answer dumps,
+// sidecar, result CSVs) to a parallel "_hubweighted" name so the hub-neutral
+// (canonical) set is never touched.
+static std::string hw_suffix(const Config& c) { return c.hub_weighted ? "_hubweighted" : ""; }
 static std::string qfile_path(const Config& c, uint32_t t) {
-    return c.queries_dir + "/" + c.dataset_name + "_" + qtype_name(t) + ".bin";
+    return c.queries_dir + "/" + c.dataset_name + "_" + qtype_name(t) + hw_suffix(c) + ".bin";
 }
 // sidecar written by the untimed --measure_scan_overhead pass and read back by
 // the timed benchmark to populate the scan_overhead column (measured, not
 // analytic). Lives in queries/ so the "wipe only dualindex_<ds>/" rule keeps it.
 static std::string scan_overhead_path(const Config& c) {
-    return c.queries_dir + "/" + c.dataset_name + "_scan_overhead.txt";
+    return c.queries_dir + "/" + c.dataset_name + hw_suffix(c) + "_scan_overhead.txt";
 }
 
 // dataset fingerprint: (triple count, XOR-fold checksum over all packed triples)
@@ -462,9 +507,13 @@ int main(int argc, char** argv) {
                   << "         compile-time template params and will NOT be reconfigured.\n";
     }
 
-    const std::string csv_path = "results/poseidon_e2e_" + dataset_name + ".csv";
-    const std::string batches_csv_path = "results/poseidon_e2e_" + dataset_name + "_batches.csv";
-    const std::string perf_csv_path = "results/perf_" + dataset_name + ".csv";
+    // --hub_weighted writes to a parallel "_hubweighted" result set (per-dataset,
+    // unified, batches, perf) so the canonical hub-neutral CSVs are never touched.
+    const std::string hw = hw_suffix(cfg);
+    const std::string csv_path = "results/poseidon_e2e_" + dataset_name + hw + ".csv";
+    const std::string batches_csv_path = "results/poseidon_e2e_" + dataset_name + hw + "_batches.csv";
+    const std::string perf_csv_path = "results/perf_" + dataset_name + hw + ".csv";
+    const std::string unified_csv = "results/poseidon_e2e_all_snap" + hw + ".csv";
     const std::string test_path = PMDK_PATH(std::string("dualindex_") + dataset_name);
 
     std::cout << "=== Poseidon x DualIndex End-to-End: " << dataset_name << " ==="
@@ -628,22 +677,36 @@ int main(int argc, char** argv) {
             if (!write_query_file(qfile_path(cfg, QT_POINT_NEG), QT_POINT_NEG, words, 4, fp)) return 1;
             std::cout << "  wrote point_neg  (" << N_POINT_NEG << ")" << std::endl;
         }
-        // single_hop: sources sampled uniformly over distinct sources;
-        // gt_count = number of 2-hop results for that source.
+        // single_hop: hub-neutral draws sources uniformly over DISTINCT sources;
+        // --hub_weighted draws the source from the triple array instead, so a
+        // source appearing in K triples is K× more likely (hub nodes dominate).
+        // gt_count = number of 2-hop results for that source (range_gt[s]).
         {
-            std::vector<uint32_t> sources; sources.reserve(range_gt.size());
-            for (auto& kv : range_gt) sources.push_back(kv.first);
-            std::sort(sources.begin(), sources.end()); // deterministic order pre-sampling
             std::vector<uint32_t> words; words.reserve(N_RANGE * 2);
-            std::uniform_int_distribution<size_t> pick(0, sources.size() - 1);
-            for (size_t i = 0; i < N_RANGE; i++) {
-                uint32_t s = sources[pick(rng)];
-                words.push_back(s);
-                words.push_back((uint32_t)range_gt[s].size());
+            if (cfg.hub_weighted) {
+                std::uniform_int_distribution<size_t> pick(0, triples.size() - 1);
+                for (size_t i = 0; i < N_RANGE; i++) {
+                    uint32_t s = triples[pick(rng)][0];      // frequency-weighted source
+                    words.push_back(s);
+                    words.push_back((uint32_t)range_gt[s].size());
+                }
+                if (!write_query_file(qfile_path(cfg, QT_SINGLE_HOP), QT_SINGLE_HOP, words, 2, fp)) return 1;
+                std::cout << "  wrote single_hop (" << N_RANGE << ", hub-weighted from triple array)"
+                          << std::endl;
+            } else {
+                std::vector<uint32_t> sources; sources.reserve(range_gt.size());
+                for (auto& kv : range_gt) sources.push_back(kv.first);
+                std::sort(sources.begin(), sources.end()); // deterministic order pre-sampling
+                std::uniform_int_distribution<size_t> pick(0, sources.size() - 1);
+                for (size_t i = 0; i < N_RANGE; i++) {
+                    uint32_t s = sources[pick(rng)];
+                    words.push_back(s);
+                    words.push_back((uint32_t)range_gt[s].size());
+                }
+                if (!write_query_file(qfile_path(cfg, QT_SINGLE_HOP), QT_SINGLE_HOP, words, 2, fp)) return 1;
+                std::cout << "  wrote single_hop (" << N_RANGE << ", distinct sources="
+                          << sources.size() << ")" << std::endl;
             }
-            if (!write_query_file(qfile_path(cfg, QT_SINGLE_HOP), QT_SINGLE_HOP, words, 2, fp)) return 1;
-            std::cout << "  wrote single_hop (" << N_RANGE << ", distinct sources="
-                      << sources.size() << ")" << std::endl;
         }
         // multi_hop: (src,hop1) pairs sampled from existing triples;
         // gt_count = number of hop2 for that (src,hop1).
@@ -1161,13 +1224,140 @@ int main(int argc, char** argv) {
 
     db->commit_transaction();
 
+    // ==================== ART baseline (additive; --with_art) ====================
+    // Adaptive Radix Tree (libart) over the SAME extracted triples, queried with
+    // the SAME persisted workloads, warm-up (500) and single-execution timing via
+    // run_phase() as every other phase. Purely additive: no DualIndex / Flood /
+    // ZM-Index / B+-tree / native code or query path is modified.
+    double art_build_ms = 0;
+    size_t art_index_size_bytes = 0;
+    art_tree art;
+    bool art_built = false;
+    if (cfg.with_art) {
+        std::cout << "\n[ART] building Adaptive Radix Tree on " << triples.size()
+                  << " triples (12-byte big-endian keys) ..." << std::endl;
+        long long rss_before = rss_kb();
+        art_tree_init(&art);
+        auto ta0 = clk::now();
+        for (size_t i = 0; i < triples.size(); i++) {
+            unsigned char k[12]; encode_key12(triples[i], k);
+            art_insert(&art, k, 12, (void*)(uintptr_t)(i + 1));
+        }
+        auto ta1 = clk::now();
+        art_built = true;
+        art_build_ms = std::chrono::duration_cast<std::chrono::microseconds>(ta1 - ta0).count() / 1000.0;
+        long long dbytes = (rss_kb() - rss_before) * 1024;   // ru_maxrss is KB (peak proxy)
+        art_index_size_bytes = dbytes > 0 ? (size_t)dbytes : 0;
+        std::cout << "  ART built: keys=" << art_size(&art) << " build " << art_build_ms
+                  << " ms, RSS Δ " << (art_index_size_bytes / (1024.0 * 1024.0)) << " MB (peak proxy)"
+                  << std::endl;
+
+        // art_point (positive): full 12-byte key lookup
+        {
+            Metrics m;
+            run_phase("art_point", pos_q.size(), 0,
+                [&](size_t i){ unsigned char k[12]; encode_key12(pos_q[i], k);
+                               return (size_t)(art_search(&art, k, 12) != nullptr); },
+                [&](size_t i, double& us) -> size_t {
+                    unsigned char k[12]; encode_key12(pos_q[i], k);
+                    auto t0 = clk::now(); void* v = art_search(&art, k, 12); auto t1 = clk::now();
+                    us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    return v != nullptr ? 1 : 0;
+                }, m, nullptr);
+            size_t found = 0;
+            for (auto& q : pos_q) { unsigned char k[12]; encode_key12(q, k); if (art_search(&art, k, 12)) found++; }
+            m.correct_pct = 100.0 * found / pos_q.size();
+            m.avg_results = (double)found / pos_q.size();
+            results.push_back(m);
+            std::cout << "  [art_point] found " << found << "/" << pos_q.size() << std::endl;
+        }
+        // art_point_negative
+        {
+            Metrics m;
+            run_phase("art_point_negative", neg_q.size(), 0,
+                [&](size_t){ return (size_t)0; },
+                [&](size_t i, double& us) -> size_t {
+                    unsigned char k[12]; encode_key12(neg_q[i], k);
+                    auto t0 = clk::now(); void* v = art_search(&art, k, 12); auto t1 = clk::now();
+                    us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    return v != nullptr ? 1 : 0;
+                }, m, nullptr);
+            size_t found = 0;
+            for (auto& q : neg_q) { unsigned char k[12]; encode_key12(q, k); if (art_search(&art, k, 12)) found++; }
+            m.correct_pct = 100.0 * (neg_q.size() - found) / neg_q.size();
+            m.avg_results = (double)found / neg_q.size();
+            results.push_back(m);
+            std::cout << "  [art_point_negative] false positives " << found << "/" << neg_q.size() << std::endl;
+        }
+        // art_single_hop: 4-byte SourceID prefix iteration
+        {
+            Metrics m; double total = 0;
+            run_phase("art_single_hop", range_q.size(), sizeof(uint32_t),
+                [&](size_t i){ unsigned char p[4]; put_be32(range_q[i], p);
+                               std::vector<uint32_t> o; ArtHopCtx c{&o};
+                               art_iter_prefix(&art, p, 4, art_collect_hop2, &c); return o.size(); },
+                [&](size_t i, double& us) -> size_t {
+                    unsigned char p[4]; put_be32(range_q[i], p);
+                    std::vector<uint32_t> o; ArtHopCtx c{&o};
+                    auto t0 = clk::now(); art_iter_prefix(&art, p, 4, art_collect_hop2, &c); auto t1 = clk::now();
+                    us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    return o.size();
+                }, m, &total);
+            size_t exact = 0;
+            for (uint32_t s : range_q) {
+                std::vector<uint32_t> got; ArtHopCtx c{&got};
+                unsigned char p[4]; put_be32(s, p);
+                art_iter_prefix(&art, p, 4, art_collect_hop2, &c);
+                std::vector<uint32_t> exp = range_gt[s];
+                std::sort(got.begin(), got.end()); std::sort(exp.begin(), exp.end());
+                if (got == exp) exact++;
+            }
+            m.correct_pct = 100.0 * exact / range_q.size();
+            m.avg_results = total / range_q.size();
+            results.push_back(m);
+            std::cout << "  [art_single_hop] exact " << exact << "/" << range_q.size()
+                      << ", avg " << m.avg_results << std::endl;
+        }
+        // art_multi_hop: 8-byte (SourceID,Hop1) prefix iteration
+        {
+            Metrics m; double total = 0;
+            run_phase("art_multi_hop", mh_q.size(), sizeof(uint32_t),
+                [&](size_t i){ unsigned char p[8]; put_be32(mh_q[i].first, p); put_be32(mh_q[i].second, p + 4);
+                               std::vector<uint32_t> o; ArtHopCtx c{&o};
+                               art_iter_prefix(&art, p, 8, art_collect_hop2, &c); return o.size(); },
+                [&](size_t i, double& us) -> size_t {
+                    unsigned char p[8]; put_be32(mh_q[i].first, p); put_be32(mh_q[i].second, p + 4);
+                    std::vector<uint32_t> o; ArtHopCtx c{&o};
+                    auto t0 = clk::now(); art_iter_prefix(&art, p, 8, art_collect_hop2, &c); auto t1 = clk::now();
+                    us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    return o.size();
+                }, m, &total);
+            size_t exact = 0;
+            for (auto& q : mh_q) {
+                std::vector<uint32_t> got; ArtHopCtx c{&got};
+                unsigned char p[8]; put_be32(q.first, p); put_be32(q.second, p + 4);
+                art_iter_prefix(&art, p, 8, art_collect_hop2, &c);
+                std::vector<uint32_t> exp = mh_gt[pack2(q.first, q.second)];
+                std::sort(got.begin(), got.end()); std::sort(exp.begin(), exp.end());
+                if (got == exp) exact++;
+            }
+            m.correct_pct = 100.0 * exact / mh_q.size();
+            m.avg_results = total / mh_q.size();
+            results.push_back(m);
+            std::cout << "  [art_multi_hop] exact " << exact << "/" << mh_q.size()
+                      << ", avg " << m.avg_results << std::endl;
+        }
+    }
+
     // per-row build-time / index-size / scan_overhead selectors
     auto row_build = [&](const std::string& nm) -> double {
+        if (nm.rfind("art", 0) == 0) return art_build_ms;
         if (nm.rfind("btree", 0) == 0) return btree_build_ms;
         if (nm.rfind("native", 0) == 0) return 0.0;
         return build_time_ms;
     };
     auto row_size = [&](const std::string& nm) -> size_t {
+        if (nm.rfind("art", 0) == 0) return art_index_size_bytes;
         if (nm.rfind("btree", 0) == 0) return btree_size_bytes;
         if (nm.rfind("native", 0) == 0) return 0;
         return index_size_bytes;
@@ -1178,7 +1368,7 @@ int main(int argc, char** argv) {
     // C++ walker vs a brute-force Python oracle.
     auto dump_answers = [&](uint32_t type, const std::vector<uint32_t>& ans) {
         std::string path = cfg.queries_dir + "/" + dataset_name + "_" + qtype_name(type)
-                         + "_answers.bin";
+                         + hw_suffix(cfg) + "_answers.bin";
         std::ofstream f(path, std::ios::binary);
         uint32_t n = (uint32_t)ans.size();
         f.write(reinterpret_cast<const char*>(&n), sizeof(n));
@@ -1248,8 +1438,8 @@ int main(int argc, char** argv) {
 
     // unified CSV (append; metadata + header written once)
     {
-        bool exists = std::filesystem::exists(UNIFIED_CSV);
-        std::ofstream u(UNIFIED_CSV, std::ios::app);
+        bool exists = std::filesystem::exists(unified_csv);
+        std::ofstream u(unified_csv, std::ios::app);
         if (!exists) {
             write_meta_header(u, meta, cfg, /*note_scan_overhead=*/true);
             u << SCHEMA_HEADER;
@@ -1299,6 +1489,10 @@ int main(int argc, char** argv) {
     std::cout << "flood_k=" << cfg.flood_k << " zm_epsilon=" << cfg.zm_epsilon
               << " build_time_ms=" << build_time_ms << " index_size_bytes=" << index_size_bytes
               << std::endl;
+    if (cfg.with_art)
+        std::cout << "art_build_time_ms=" << art_build_ms
+                  << " art_index_size_bytes=" << art_index_size_bytes
+                  << " (RSS-delta peak proxy)" << std::endl;
     printf("%-20s %9s %10s %10s %10s %10s %14s %10s %8s %12s\n", "query_type", "n", "mean_us",
            "p50_us", "p95_us", "p99_us", "qps", "correct%", "scan_ov", "avg_results");
     for (auto& m : results) {
@@ -1307,7 +1501,7 @@ int main(int argc, char** argv) {
                m.correct_pct, m.scan_overhead, m.avg_results);
     }
     std::cout << "\nper-dataset CSV  : " << csv_path << std::endl;
-    std::cout << "unified CSV (app): " << UNIFIED_CSV << std::endl;
+    std::cout << "unified CSV (app): " << unified_csv << std::endl;
 
     // -------------------- DualIndex vs Native comparison --------------------
     auto mean_of = [&](const std::string& nm) -> double {
@@ -1330,6 +1524,7 @@ int main(int argc, char** argv) {
            build_time_ms);
     std::cout << "(speedup > 1 means DualIndex is faster; < 1 means slower)" << std::endl;
 
+    if (art_built) art_tree_destroy(&art);
     graph_pool::destroy(pool);
     std::cout << "\n=== Done (" << dataset_name << ") ===" << std::endl;
     return 0;

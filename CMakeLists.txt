@@ -623,9 +623,17 @@ add_executable(test_dualindex test/dual_index_test.cpp)
 target_link_libraries(test_dualindex poseidon_core)
 target_compile_options(test_dualindex PRIVATE -mbmi2)
 
-add_executable(bench_dualindex test/bench_dualindex_wiki.cpp)
-target_link_libraries(bench_dualindex poseidon_core)
+# ART baseline: compile the same libart (Adaptive Radix Tree) used by the
+# standalone DualIndex benchmarks directly into bench_dualindex, so ART runs
+# in-process on the same extracted triples. Additive only. (Path matches the
+# hardcoded /home/proteeti/DualIndex include dirs above.)
+set(LIBART_SRC "/home/proteeti/DualIndex/third_party/libart/src")
+add_executable(bench_dualindex test/bench_dualindex_wiki.cpp ${LIBART_SRC}/art.c)
+target_link_libraries(bench_dualindex poseidon_core pthread)
+target_include_directories(bench_dualindex PRIVATE ${LIBART_SRC})
 target_compile_options(bench_dualindex PRIVATE -mbmi2 -O3 -DNDEBUG)
+set_source_files_properties(${LIBART_SRC}/art.c PROPERTIES
+    COMPILE_FLAGS "-O3 -DNDEBUG -std=c99")
 
 # SCAN_DEBUG: instrument FloodSourceSort's cell-scan loop with an entries-examined
 # counter so bench_dualindex can verify its analytic scan_overhead formula.

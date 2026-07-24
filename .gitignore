@@ -546,6 +546,8 @@ queries/*.bin
 queries/*_scan_overhead.txt
 results/
 logs/
+figures/
+scripts/
 # per-dataset PMEM/storage dirs (dualindex_wiki_vote/, dualindex_web_google/, ...)
 /dualindex_*/
 # instrumented SCAN_DEBUG build tree (companion to /build/)
